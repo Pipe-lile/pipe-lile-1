@@ -1,7 +1,7 @@
 /*
   Ejemplo para ESP32 + sensor de presencia por radar LD2410B.
-  Variante con filtrado temporal, suavizado de señal y
-  confirmación por tiempo para reducir falsos positivos.
+  Variante con filtrado temporal y suavizado de señal para reducir
+  falsos positivos cuando no hay presencia real.
 
   Basado en la librería: MyLD2410 (https://github.com/iavorvel/MyLD2410)
 */
@@ -29,12 +29,10 @@ struct UserConfig {
   uint16_t minSignalMoving   = 80;   // Señal mínima para objetivo en movimiento
   uint16_t minSignalStatic   = 50;   // Señal mínima para objetivo estacionario
   uint16_t maxDistanceCm     = 600;  // Distancia máxima a considerar
-  uint8_t  framesToConfirm   = 10;   // Tramas consecutivas para confirmar presencia
-  uint8_t  framesToRelease   = 3;    // Tramas consecutivas sin presencia para liberar
-  uint8_t  framesToForget    = 2;    // Reducción gradual cuando hay ruido
-  uint8_t  smoothingPercent  = 70;   // Porcentaje (0-100) para suavizado exponencial
-  uint16_t minPresenceMs     = 400;  // Tiempo mínimo continuo para confirmar presencia
-  uint16_t minAbsenceMs      = 800;  // Tiempo mínimo continuo sin señal para liberar
+  uint8_t  framesToConfirm   = 10;    // Tramas consecutivas para confirmar presencia
+  uint8_t  framesToRelease   = 1;    // Tramas consecutivas sin presencia para limpiar estado
+  uint8_t  framesToForget    = 1;    // Reducción gradual cuando hay ruido
+  uint8_t  smoothingPercent  = 0;   // Porcentaje (0-100) para suavizado exponencial
   uint16_t printIntervalMs   = 1500; // Intervalo de impresión en loop
 };
 
@@ -49,9 +47,6 @@ struct PresenceState {
   uint8_t badFrames = 0;
   uint16_t movingFiltered = 0;
   uint16_t staticFiltered = 0;
-  unsigned long candidateStartMs = 0;
-  unsigned long lastSeenMs = 0;
-  bool presenceLatched = false;
 };
 
 PresenceState presenceState;
@@ -75,8 +70,6 @@ void printConfig(const UserConfig &c) {
   Serial.print(F("Tramas soltar         : ")); Serial.println(c.framesToRelease);
   Serial.print(F("Tramas olvidar        : ")); Serial.println(c.framesToForget);
   Serial.print(F("Suavizado (%)         : ")); Serial.println(c.smoothingPercent);
-  Serial.print(F("Min presencia (ms)    : ")); Serial.println(c.minPresenceMs);
-  Serial.print(F("Min ausencia (ms)     : ")); Serial.println(c.minAbsenceMs);
   Serial.print(F("Intervalo impresion   : ")); Serial.print(c.printIntervalMs); Serial.println(F(" ms"));
   Serial.println(F("===================================="));
   Serial.println();
@@ -126,8 +119,6 @@ uint16_t smoothSignal(uint16_t previous, uint16_t current, uint8_t smoothingPerc
 }
 
 bool presenceFiltered(MyLD2410 &ld, PresenceState &state, const UserConfig &c) {
-  const unsigned long now = millis();
-
   // Suavizamos las señales para amortiguar picos aislados
   state.movingFiltered = smoothSignal(state.movingFiltered, ld.movingTargetSignal(), c.smoothingPercent);
   state.staticFiltered = smoothSignal(state.staticFiltered, ld.stationaryTargetSignal(), c.smoothingPercent);
@@ -143,39 +134,25 @@ bool presenceFiltered(MyLD2410 &ld, PresenceState &state, const UserConfig &c) {
   const bool presenceCandidate = movOK || staOK;
 
   if (presenceCandidate) {
-    if (state.goodFrames == 0) {
-      state.candidateStartMs = now;
-    }
     if (state.goodFrames < c.framesToConfirm) {
       state.goodFrames += 1;
     }
-    state.badFrames = 0;
-    state.lastSeenMs = now;
+    state.badFrames = 0; // reiniciar ausencia cuando hay señal válida
   } else {
     if (state.badFrames < c.framesToRelease) {
       state.badFrames += 1;
     }
+    // Reducimos lentamente la confianza para evitar falsos "apagados"
     if (state.goodFrames > 0 && state.badFrames >= c.framesToForget) {
       state.goodFrames -= 1;
-      if (state.goodFrames == 0) {
-        state.candidateStartMs = 0;
-      }
     }
   }
 
-  const bool timeConfirmed = state.goodFrames >= c.framesToConfirm &&
-                             (now - state.candidateStartMs) >= c.minPresenceMs;
-  if (timeConfirmed) {
-    state.presenceLatched = true;
-  }
+  // Solo consideramos ausencia real tras varias tramas sin señal
+  const bool confirmedPresence = state.goodFrames >= c.framesToConfirm;
+  const bool confirmedAbsence = state.badFrames >= c.framesToRelease;
 
-  const bool absenceConfirmed = state.badFrames >= c.framesToRelease &&
-                                (now - state.lastSeenMs) >= c.minAbsenceMs;
-  if (absenceConfirmed) {
-    state.presenceLatched = false;
-  }
-
-  return state.presenceLatched;
+  return confirmedPresence && !confirmedAbsence;
 }
 
 // -----------------------------------------------------------------------------
