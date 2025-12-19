@@ -12,8 +12,9 @@
 // Configuración de hardware
 // -----------------------------------------------------------------------------
 #define SENSOR_SERIAL Serial1
-#define RX_PIN 16
-#define TX_PIN 17
+// Usa pines distintos a los del modem 4G para evitar solapes.
+#define RX_PIN 26
+#define TX_PIN 27
 
 // Velocidades de los puertos serie
 #define SERIAL_BAUD_RATE 115200
